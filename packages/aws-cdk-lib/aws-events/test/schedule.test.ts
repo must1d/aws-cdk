@@ -1,4 +1,4 @@
-import { Duration, Stack, Lazy } from '../../core';
+import { Duration, Stack, Lazy, TimeZone } from '../../core';
 import * as events from '../lib';
 
 describe('schedule', () => {
@@ -112,5 +112,19 @@ describe('fractional minutes checks', () => {
     expect(() => {
       events.Schedule.rate(Duration.minutes(0.25));
     }).toThrow(/must be a whole number of/);
+  });
+});
+
+describe('timezone support', () => {
+  test('cron expressions can have timezone specified', () => {
+    const schedule = events.Schedule.cron({
+      minute: '0',
+      hour: '8',
+      day: '1',
+      timeZone: TimeZone.AMERICA_NEW_YORK,
+    });
+
+    expect(schedule.expressionString).toEqual('cron(0 8 1 * ? *)');
+    expect(schedule.timeZone).toEqual(TimeZone.AMERICA_NEW_YORK);
   });
 });

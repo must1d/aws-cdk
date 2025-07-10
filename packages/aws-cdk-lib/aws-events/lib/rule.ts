@@ -99,6 +99,7 @@ export class Rule extends Resource implements IRule {
   private readonly targets = new Array<CfnRule.TargetProperty>();
   private readonly eventPattern: EventPattern = { };
   private readonly scheduleExpression?: string;
+  private readonly scheduleExpressionTimezone?: string;
   private readonly description?: string;
 
   /** Set to keep track of what target accounts and regions we've already created event buses for */
@@ -117,6 +118,7 @@ export class Rule extends Resource implements IRule {
 
     this.description = props.description;
     this.scheduleExpression = props.schedule?.expressionString;
+    this.scheduleExpressionTimezone = props.schedule?.timeZone?.timezoneName;
 
     // add a warning on synth when minute is not defined in a cron schedule
     props.schedule?._bind(this);
@@ -131,6 +133,11 @@ export class Rule extends Resource implements IRule {
       eventBusName: props.eventBus && props.eventBus.eventBusName,
       roleArn: props.role?.roleArn,
     });
+
+    // If timezone is specified, add it as a property override since it's not yet in the generated types
+    if (this.scheduleExpressionTimezone) {
+      resource.addPropertyOverride('ScheduleExpressionTimezone', this.scheduleExpressionTimezone);
+    }
 
     this.ruleArn = this.getResourceArnAttribute(resource.attrArn, {
       service: 'events',

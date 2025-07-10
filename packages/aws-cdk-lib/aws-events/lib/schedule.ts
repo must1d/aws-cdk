@@ -1,5 +1,5 @@
 import { Construct } from 'constructs';
-import { Annotations, Duration, UnscopedValidationError } from '../../core';
+import { Annotations, Duration, TimeZone, UnscopedValidationError } from '../../core';
 
 /**
  * Schedule for scheduled event rules
@@ -60,11 +60,13 @@ export abstract class Schedule {
 
     return new class extends Schedule {
       public readonly expressionString: string = `cron(${minute} ${hour} ${day} ${month} ${weekDay} ${year})`;
+      public readonly timeZone?: TimeZone = options.timeZone;
+
       public _bind(scope: Construct) {
         if (!options.minute) {
           Annotations.of(scope).addWarningV2('@aws-cdk/aws-events:scheduleWillRunEveryMinute', 'cron: If you don\'t pass \'minute\', by default the event runs every minute. Pass \'minute: \'*\'\' if that\'s what you intend, or \'minute: 0\' to run once per hour instead.');
         }
-        return new LiteralSchedule(this.expressionString);
+        return new LiteralSchedule(this.expressionString, this.timeZone);
       }
     };
   }
@@ -74,7 +76,12 @@ export abstract class Schedule {
    */
   public abstract readonly expressionString: string;
 
-  protected constructor() {}
+  /**
+   * Retrieve the timezone for this schedule, if specified
+   */
+  public readonly timeZone?: TimeZone;
+
+  protected constructor() { }
 
   /**
    *
@@ -133,10 +140,18 @@ export interface CronOptions {
    * @default - Any day of the week
    */
   readonly weekDay?: string;
+
+  /**
+   * The timezone to use for the cron expression.
+   *
+   * @default - UTC
+   * @see https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-cron-expressions.html
+   */
+  readonly timeZone?: TimeZone;
 }
 
 class LiteralSchedule extends Schedule {
-  constructor(public readonly expressionString: string) {
+  constructor(public readonly expressionString: string, public readonly timeZone?: TimeZone) {
     super();
   }
 
