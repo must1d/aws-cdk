@@ -1,4 +1,4 @@
-import { Match, Template } from 'aws-cdk-lib/assertions';
+import { Match, Template } from '../../assertions';
 import * as cdk from '../../core';
 import { Duration, Stack, Lazy, TimeZone, UnscopedValidationError } from '../../core';
 import * as events from '../lib';
