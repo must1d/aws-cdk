@@ -1,162 +1,363 @@
 # Amazon EventBridge Construct Library
 
+
 Amazon EventBridge delivers a near real-time stream of system events that
-describe changes in AWS resources. EventBridge was formerly called CloudWatch
-Events.
+describe changes in AWS resources. For example, an AWS CodePipeline emits the
+[State
+Change](https://docs.aws.amazon.com/eventbridge/latest/userguide/event-types.html#codepipeline-event-type)
+event when the pipeline changes its state.
+
+* __Events__: An event indicates a change in your AWS environment. AWS resources
+  can generate events when their state changes. For example, Amazon EC2
+  generates an event when the state of an EC2 instance changes from pending to
+  running, and Amazon EC2 Auto Scaling generates events when it launches or
+  terminates instances. AWS CloudTrail publishes events when you make API calls.
+  You can generate custom application-level events and publish them to
+  EventBridge. You can also set up scheduled events that are generated on
+  a periodic basis. For a list of services that generate events, and sample
+  events from each service, see [EventBridge Event Examples From Each
+  Supported
+  Service](https://docs.aws.amazon.com/eventbridge/latest/userguide/event-types.html).
+* __Targets__: A target processes events. Targets can include Amazon EC2
+  instances, AWS Lambda functions, Kinesis streams, Amazon ECS tasks, Step
+  Functions state machines, Amazon SNS topics, Amazon SQS queues, Amazon CloudWatch LogGroups, and built-in
+  targets. A target receives events in JSON format.
+* __Rules__: A rule matches incoming events and routes them to targets for
+  processing. A single rule can route to multiple targets, all of which are
+  processed in parallel. Rules are not processed in a particular order. This
+  enables different parts of an organization to look for and process the events
+  that are of interest to them. A rule can customize the JSON sent to the
+  target, by passing only certain parts or by overwriting it with a constant.
+* __EventBuses__: An event bus can receive events from your own custom applications
+  or it can receive events from applications and services created by AWS SaaS partners.
+  See [Creating an Event Bus](https://docs.aws.amazon.com/eventbridge/latest/userguide/create-event-bus.html).
 
 ## Rule
 
 The `Rule` construct defines an EventBridge rule which monitors an
-event based on an [event pattern](https://docs.aws.amazon.com/eventbridge/latest/userguide/filtering-examples-structure.html)
-and invoke event targets when the pattern is matched against a triggered event.
+event based on an [event
+pattern](https://docs.aws.amazon.com/eventbridge/latest/userguide/filtering-examples-structure.html)
+and invoke __event targets__ when the pattern is matched against a triggered
+event. Event targets are objects that implement the `IRuleTarget` interface.
 
-The following example creates a rule that will trigger a CodeBuild project
-when a commit is pushed to the "main" branch of a CodeCommit repository:
+Normally, you will use one of the `source.onXxx(name[, target[, options]]) ->
+Rule` methods on the event source to define an event rule associated with
+the specific activity. You can targets either via props, or add targets using
+`rule.addTarget`.
+
+For example, to define an rule that triggers a CodeBuild project build when a
+commit is pushed to the "master" branch of a CodeCommit repository:
 
 ```ts
-import * as codecommit from 'aws-cdk-lib/aws-codecommit';
-import * as codebuild from 'aws-cdk-lib/aws-codebuild';
-import * as targets from 'aws-cdk-lib/aws-events-targets';
+declare const repo: codecommit.Repository;
+declare const project: codebuild.Project;
 
-const repo = new codecommit.Repository(this, 'MyRepo', {
-  repositoryName: 'aws-cdk-demo-repo',
+const onCommitRule = repo.onCommit('OnCommit', {
+  target: new targets.CodeBuildProject(project),
+  branches: ['master']
 });
+```
 
-const project = new codebuild.Project(this, 'MyProject', {
-  projectName: 'aws-cdk-demo-project',
-  // ...
+You can add additional targets, with optional [input
+transformer](https://docs.aws.amazon.com/eventbridge/latest/APIReference/API_InputTransformer.html)
+using `eventRule.addTarget(target[, input])`. For example, we can add a SNS
+topic target which formats a human-readable message for the commit.
+
+For example, this adds an SNS topic as a target:
+
+```ts
+declare const onCommitRule: events.Rule;
+declare const topic: sns.Topic;
+
+onCommitRule.addTarget(new targets.SnsTopic(topic, {
+  message: events.RuleTargetInput.fromText(
+    `A commit was pushed to the repository ${codecommit.ReferenceEvent.repositoryName} on branch ${codecommit.ReferenceEvent.referenceName}`
+  )
+}));
+```
+
+Or using an Object:
+
+```ts
+declare const onCommitRule: events.Rule;
+declare const topic: sns.Topic;
+
+onCommitRule.addTarget(new targets.SnsTopic(topic, {
+  message: events.RuleTargetInput.fromObject(
+    {
+      DataType: `custom_${events.EventField.fromPath('$.detail-type')}`
+    }
+  )
+}));
+```
+
+### Role
+You can specify an IAM Role:
+
+```ts
+declare const role: iam.IRole;
+
+new events.Rule(this, 'MyRule', {
+  schedule: events.Schedule.cron({ minute: '0', hour: '4' }),
+  role,
 });
+```
 
-const rule = new events.Rule(this, 'CommitRule', {
+**Note**: If you're setting an event bus in another account as the target and that account granted permission to your account through an organization instead of directly by the account ID, you must specify a RoleArn with proper permissions in the Target structure, instead of here in this parameter.
+
+### Matchers
+
+To define a pattern, use the `Match` class, which provides a number of factory methods to declare
+different logical predicates. For example, to match all S3 events for objects larger than 1024
+bytes, stored using one of the storage classes Glacier, Glacier IR or Deep Archive and coming from
+any region other than the AWS GovCloud ones:
+
+```ts
+const rule = new events.Rule(this, 'rule', {
   eventPattern: {
-    source: ['aws.codecommit'],
-    detailType: ['CodeCommit Repository State Change'],
-    resources: [repo.repositoryArn],
     detail: {
-      event: ['referenceCreated', 'referenceUpdated'],
-      referenceType: ['branch'],
-      referenceName: ['main'],
+      object: {
+        // Matchers may appear at any level
+        size: events.Match.greaterThan(1024),
+      },
+
+      // 'OR' condition
+      'source-storage-class': events.Match.anyOf(
+        events.Match.prefix('GLACIER'),
+        events.Match.exactString('DEEP_ARCHIVE'),
+      ),
     },
+
+    // If you prefer, you can use a low level array of strings, as directly consumed by EventBridge
+    source: ['aws.s3'],
+
+    region: events.Match.anythingButPrefix('us-gov'),
   },
-  targets: [new targets.CodeBuildProject(project)],
 });
 ```
 
-## Schedule
-
-You can also configure a rule to run on a schedule. The following example
-creates a rule that triggers a Lambda function every day at 12:00pm UTC:
+Matches can also be made case-insensitive, or make use of wildcard matches. For example, to match
+object create events for buckets whose name starts with `raw-`, for objects with key matching
+the pattern `path/to/object/*.txt` and the requester ends with `.AMAZONAWS.COM`:
 
 ```ts
-import * as lambda from 'aws-cdk-lib/aws-lambda';
-import * as targets from 'aws-cdk-lib/aws-events-targets';
+const rule = new events.Rule(this, 'rule', {
+  eventPattern: {
+    detail: {
+      bucket: {
+        name: events.Match.prefixEqualsIgnoreCase('raw-'),
+      },
 
-const fn = new lambda.Function(this, 'MyFunc', {
-  runtime: lambda.Runtime.NODEJS_18_X,
-  handler: 'index.handler',
-  code: lambda.Code.fromInline(`exports.handler = ${handler.toString()}`),
-});
+      object: {
+        key: events.Match.wildcard('path/to/object/*.txt'),
+      },
 
-const rule = new events.Rule(this, 'ScheduleRule', {
-  schedule: events.Schedule.cron({
-    minute: '0',
-    hour: '12',
-  }),
-  targets: [new targets.LambdaFunction(fn)],
+      requester: events.Match.suffixEqualsIgnoreCase('.AMAZONAWS.COM'),
+    },
+    detailType: events.Match.equalsIgnoreCase('object created'),
+  },
 });
 ```
 
-### Timezone Support
-
-You can specify a timezone for your cron expressions. This is useful when you want your scheduled events to run at a specific time in a specific timezone, especially in regions that observe daylight saving time.
+The "anything but" matchers allow you to specify multiple arguments. For example:
 
 ```ts
-import * as lambda from 'aws-cdk-lib/aws-lambda';
-import * as targets from 'aws-cdk-lib/aws-events-targets';
+const rule = new events.Rule(this, 'rule', {
+  eventPattern: {
+    region: events.Match.anythingBut('us-east-1', 'us-east-2', 'us-west-1', 'us-west-2'),
 
-const fn = new lambda.Function(this, 'MyFunc', {
-  runtime: lambda.Runtime.NODEJS_18_X,
-  handler: 'index.handler',
-  code: lambda.Code.fromInline(`exports.handler = ${handler.toString()}`),
+    detail: {
+      bucket: {
+        name: events.Match.anythingButPrefix('foo', 'bar', 'baz'),
+      },
+
+      object: {
+        key: events.Match.anythingButSuffix('.gif', '.png', '.jpg'),
+      },
+
+      requester: events.Match.anythingButWildcard('*.amazonaws.com', '123456789012'),
+    },
+    detailType: events.Match.anythingButEqualsIgnoreCase('object created', 'object deleted'),
+  },
 });
+```
 
-const rule = new events.Rule(this, 'ScheduleRule', {
-  schedule: events.Schedule.cron({
+## Scheduling
+
+You can configure a Rule to run on a schedule (cron or rate).
+Rate must be specified in minutes, hours or days.
+
+The following example runs a task every day at 4am:
+
+```ts fixture=basic
+import { Rule, Schedule } from 'aws-cdk-lib/aws-events';
+import { EcsTask } from 'aws-cdk-lib/aws-events-targets';
+import { Cluster, TaskDefinition } from 'aws-cdk-lib/aws-ecs';
+import { Role } from 'aws-cdk-lib/aws-iam';
+
+declare const cluster: Cluster;
+declare const taskDefinition: TaskDefinition;
+declare const role: Role;
+
+const ecsTaskTarget = new EcsTask({ cluster, taskDefinition, role });
+
+new Rule(this, 'ScheduleRule', {
+ schedule: Schedule.cron({ minute: '0', hour: '4' }),
+ targets: [ecsTaskTarget],
+});
+```
+
+### Time Zone Support
+
+You can specify a time zone for cron expressions using the `timeZone` property. This allows you to schedule events based on a specific time zone rather than the default UTC.
+
+```ts
+import { Rule, Schedule } from 'aws-cdk-lib/aws-events';
+import { TimeZone } from 'aws-cdk-lib/core';
+
+new Rule(this, 'ScheduleRule', {
+  schedule: Schedule.cron({
     minute: '0',
     hour: '8',
-    timeZone: 'Europe/London', // Run at 8:00 AM London time
+    day: '1',
+    timeZone: TimeZone.AMERICA_NEW_YORK, // Run at 8:00 AM New York time on the 1st of each month
   }),
-  targets: [new targets.LambdaFunction(fn)],
 });
 ```
 
-The timezone must be a valid IANA timezone identifier (e.g., "America/New_York", "Europe/London", "Asia/Tokyo"). If no timezone is specified, UTC is used by default.
+The `TimeZone` class provides constants for all supported time zones. Some examples include:
+- `TimeZone.AMERICA_NEW_YORK`
+- `TimeZone.EUROPE_LONDON`
+- `TimeZone.ASIA_TOKYO`
+- `TimeZone.AUSTRALIA_SYDNEY`
+
+Note that time zone support is only available for cron expressions and not for rate expressions.
+
+If you want to specify Fargate platform version, set `platformVersion` in EcsTask's props like the following example:
+
+```ts
+declare const cluster: ecs.Cluster;
+declare const taskDefinition: ecs.TaskDefinition;
+declare const role: iam.Role;
+
+const platformVersion = ecs.FargatePlatformVersion.VERSION1_4;
+const ecsTaskTarget = new targets.EcsTask({ cluster, taskDefinition, role, platformVersion });
+```
 
 ## Event Targets
 
-The `targets` namespace provides classes that implement the `IRuleTarget`
+The `aws-cdk-lib/aws-events-targets` module includes classes that implement the `IRuleTarget`
 interface for various AWS services.
 
-The following targets are supported:
+See the README of the [`aws-cdk-lib/aws-events-targets`](https://github.com/aws/aws-cdk/tree/main/packages/aws-cdk-lib/aws-events-targets) module for more information on supported targets.
 
-* `targets.CodeBuildProject`: Start a CodeBuild build
-* `targets.CodePipeline`: Start a CodePipeline pipeline execution
-* `targets.EcsTask`: Start a task on an ECS cluster
-* `targets.LambdaFunction`: Invoke a Lambda function
-* `targets.SnsTopic`: Publish to an SNS topic
-* `targets.SqsQueue`: Send a message to an SQS queue
-* `targets.StepFunction`: Trigger a Step Function state machine
-* `targets.BatchJob`: Queue a Batch job
-* `targets.ApiGateway`: Call an API Gateway REST API
-* `targets.AwsApi`: Call any AWS API
-* `targets.ApiDestination`: Invoke an API destination
+### Cross-account and cross-region targets
+
+It's possible to have the source of the event and a target in separate AWS accounts and regions:
+
+```ts nofixture
+import { App, Stack } from 'aws-cdk-lib';
+import * as codebuild from 'aws-cdk-lib/aws-codebuild';
+import * as codecommit from 'aws-cdk-lib/aws-codecommit';
+import * as targets from 'aws-cdk-lib/aws-events-targets';
+
+const app = new App();
+
+const account1 = '11111111111';
+const account2 = '22222222222';
+
+const stack1 = new Stack(app, 'Stack1', { env: { account: account1, region: 'us-west-1' } });
+const repo = new codecommit.Repository(stack1, 'Repository', {
+  repositoryName: 'myrepository',
+});
+
+const stack2 = new Stack(app, 'Stack2', { env: { account: account2, region: 'us-east-1' } });
+const project = new codebuild.Project(stack2, 'Project', {
+  // ...
+});
+
+repo.onCommit('OnCommit', {
+  target: new targets.CodeBuildProject(project),
+});
+```
+
+In this situation, the CDK will wire the 2 accounts together:
+
+* It will generate a rule in the source stack with the event bus of the target account as the target
+* It will generate a rule in the target stack, with the provided target
+* It will generate a separate stack that gives the source account permissions to publish events
+  to the event bus of the target account in the given region,
+  and make sure its deployed before the source stack
+
+For more information, see the
+[AWS documentation on cross-account events](https://docs.aws.amazon.com/eventbridge/latest/userguide/eventbridge-cross-account-event-delivery.html).
 
 ## Archiving
 
-The `Archive` construct defines an EventBridge Archive which archives
-events based on an [archive pattern](https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-archive.html)
-and a retention period.
-
-The following example creates an archive that will capture all events
-from CodeBuild and retain them for 30 days:
+It is possible to archive all or some events sent to an event bus. It is then possible to [replay these events](https://aws.amazon.com/blogs/aws/new-archive-and-replay-events-with-amazon-eventbridge/).
 
 ```ts
-import * as events from 'aws-cdk-lib/aws-events';
+const bus = new events.EventBus(this, 'bus', {
+  eventBusName: 'MyCustomEventBus',
+  description: 'MyCustomEventBus',
+});
 
-const archive = new events.Archive(this, 'MyArchive', {
-  sourceEventBus: eventBus,
+bus.archive('MyArchive', {
+  archiveName: 'MyCustomEventBusArchive',
+  description: 'MyCustomerEventBus Archive',
   eventPattern: {
-    source: ['aws.codebuild'],
+    account: [Stack.of(this).account],
   },
-  retention: cdk.Duration.days(30),
+  retention: Duration.days(365),
 });
 ```
 
-## Cross-account and Cross-region Events
+## Dead-Letter Queue for EventBus
 
-You can send events to other account or region via the `EventBus.grantPutEventsTo` method.
+It is possible to configure a [Dead Letter Queue for an EventBus](https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-rule-event-delivery.html#eb-rule-dlq). This is useful when you want to capture events that could not be delivered to any of the targets.
 
-The following example creates an event rule that sends all CodeBuild events to an event bus in another account:
+To configure a Dead Letter Queue for an EventBus, you can use the `deadLetterQueue` property of the `EventBus` construct.
 
 ```ts
-import * as events from 'aws-cdk-lib/aws-events';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
 
-// Define the account and region where the target event bus is located
-const targetAccount = '123456789012';
-const targetRegion = 'us-west-1';
+const dlq = new sqs.Queue(this, 'DLQ');
 
-// Create an event bus in the target account
-const targetEventBus = events.EventBus.fromEventBusArn(this, 'TargetEventBus',
-  `arn:aws:events:${targetRegion}:${targetAccount}:event-bus/default`);
-
-// Grant permission to the current account to put events on the target event bus
-targetEventBus.grantPutEventsTo(new iam.AccountPrincipal(this.account));
-
-// Create a rule that sends all CodeBuild events to the target event bus
-const rule = new events.Rule(this, 'CrossAccountRule', {
-  eventPattern: {
-    source: ['aws.codebuild'],
-  },
-  targets: [new targets.EventBus(targetEventBus)],
+const bus = new events.EventBus(this, 'Bus', {
+  deadLetterQueue: dlq,
 });
 ```
+
+## Granting PutEvents to an existing EventBus
+
+To import an existing EventBus into your CDK application, use `EventBus.fromEventBusArn`, `EventBus.fromEventBusAttributes`
+or `EventBus.fromEventBusName` factory method.
+
+Then, you can use the `grantPutEventsTo` method to grant `event:PutEvents` to the eventBus.
+
+```ts
+declare const lambdaFunction: lambda.Function;
+
+const eventBus = events.EventBus.fromEventBusArn(this, 'ImportedEventBus', 'arn:aws:events:us-east-1:111111111:event-bus/my-event-bus');
+
+// now you can just call methods on the eventbus
+eventBus.grantPutEventsTo(lambdaFunction);
+```
+
+## Use a customer managed key
+
+To use a customer managed key for events on the event bus, use the `kmsKey` attribute.
+
+```ts
+import * as kms from 'aws-cdk-lib/aws-kms';
+
+declare const kmsKey: kms.IKey;
+
+new events.EventBus(this, 'Bus', {
+  kmsKey,
+});
+```
+
+**Note**: Archives and schema discovery are not supported for event buses encrypted using a customer managed key.
+To enable archives or schema discovery on an event bus, choose to use an AWS owned key.
+For more information, see [KMS key options for event bus encryption](https://docs.aws.amazon.com/eventbridge/latest/userguide/eb-encryption-at-rest-key-options.html).
