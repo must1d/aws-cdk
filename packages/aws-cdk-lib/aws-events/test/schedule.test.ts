@@ -1,4 +1,6 @@
-import { Duration, Stack, Lazy } from '../../core';
+import { Match, Template } from 'aws-cdk-lib/assertions';
+import * as cdk from '../../core';
+import { Duration, Stack, Lazy, TimeZone, UnscopedValidationError } from '../../core';
 import * as events from '../lib';
 
 describe('schedule', () => {
@@ -112,5 +114,102 @@ describe('fractional minutes checks', () => {
     expect(() => {
       events.Schedule.rate(Duration.minutes(0.25));
     }).toThrow(/must be a whole number of/);
+  });
+});
+
+describe('timezone support', () => {
+  test('cron expressions can have timezone specified', () => {
+    const schedule = events.Schedule.cron({
+      minute: '0',
+      hour: '8',
+      day: '1',
+      timeZone: TimeZone.AMERICA_NEW_YORK,
+    });
+
+    expect(schedule.expressionString).toEqual('cron(0 8 1 * ? *)');
+    expect(schedule.timeZone).toEqual(TimeZone.AMERICA_NEW_YORK);
+  });
+
+  test('rule with timezone creates CloudFormation with ScheduleExpressionTimezone', () => {
+    // GIVEN
+    const stack = new cdk.Stack();
+
+    // WHEN
+    new events.Rule(stack, 'Rule', {
+      schedule: events.Schedule.cron({
+        minute: '0',
+        hour: '8',
+        timeZone: TimeZone.EUROPE_LONDON,
+      }),
+    });
+
+    // THEN
+    Template.fromStack(stack).hasResourceProperties('AWS::Events::Rule', {
+      ScheduleExpression: 'cron(0 8 * * ? *)',
+      ScheduleExpressionTimezone: 'Europe/London',
+    });
+  });
+
+  test('rule without timezone does not include ScheduleExpressionTimezone in CloudFormation', () => {
+    // GIVEN
+    const stack = new cdk.Stack();
+
+    // WHEN
+    new events.Rule(stack, 'Rule', {
+      schedule: events.Schedule.cron({
+        minute: '0',
+        hour: '8',
+      }),
+    });
+
+    // THEN
+    Template.fromStack(stack).hasResourceProperties('AWS::Events::Rule', {
+      ScheduleExpression: 'cron(0 8 * * ? *)',
+    });
+    Template.fromStack(stack).hasResource('AWS::Events::Rule', {
+      Properties: {
+        ScheduleExpressionTimezone: Match.absent(),
+      },
+    });
+  });
+
+  test('rule with rate expression does not support timezone', () => {
+    // GIVEN
+    const stack = new cdk.Stack();
+
+    // WHEN
+    new events.Rule(stack, 'Rule', {
+      schedule: events.Schedule.rate(cdk.Duration.hours(1)),
+    });
+
+    // THEN
+    Template.fromStack(stack).hasResourceProperties('AWS::Events::Rule', {
+      ScheduleExpression: 'rate(1 hour)',
+    });
+    Template.fromStack(stack).hasResource('AWS::Events::Rule', {
+      Properties: {
+        ScheduleExpressionTimezone: Match.absent(),
+      },
+    });
+  });
+
+  test('rule with expression does not include timezone by default', () => {
+    // GIVEN
+    const stack = new cdk.Stack();
+
+    // WHEN
+    new events.Rule(stack, 'Rule', {
+      schedule: events.Schedule.expression('cron(0 8 * * ? *)'),
+    });
+
+    // THEN
+    Template.fromStack(stack).hasResourceProperties('AWS::Events::Rule', {
+      ScheduleExpression: 'cron(0 8 * * ? *)',
+    });
+    Template.fromStack(stack).hasResource('AWS::Events::Rule', {
+      Properties: {
+        ScheduleExpressionTimezone: Match.absent(),
+      },
+    });
   });
 });

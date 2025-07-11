@@ -3,6 +3,7 @@ import { Construct, IConstruct } from 'constructs';
 import { Annotations, Match, Template } from '../../assertions';
 import * as iam from '../../aws-iam';
 import * as cdk from '../../core';
+import { TimeZone } from '../../core';
 import { EventBus, EventField, IRule, IRuleTarget, RuleTargetConfig, RuleTargetInput, Schedule, Match as m } from '../lib';
 import { Rule } from '../lib/rule';
 
@@ -1235,3 +1236,22 @@ class SomeTarget implements IRuleTarget {
     };
   }
 }
+
+test('rule with timezone', () => {
+  const stack = new cdk.Stack();
+
+  new Rule(stack, 'MyRule', {
+    schedule: Schedule.cron({
+      minute: '0',
+      hour: '8',
+      day: '1',
+      timeZone: TimeZone.AMERICA_NEW_YORK,
+    }),
+  });
+
+  Template.fromStack(stack).hasResourceProperties('AWS::Events::Rule', {
+    ScheduleExpression: 'cron(0 8 1 * ? *)',
+    ScheduleExpressionTimezone: 'America/New_York',
+    State: 'ENABLED',
+  });
+});
